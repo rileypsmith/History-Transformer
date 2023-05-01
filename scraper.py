@@ -91,6 +91,22 @@ def parse_pagelist():
     urls = [base_url.format(name.replace(' ', '_')) for name in all_names]
     return urls
 
+def parse_countrylist():
+    """
+    From Wikipedia, get a list of all the articles about countries.
+    """
+    url = 'https://en.wikipedia.org/wiki/Wikipedia:WikiProject_Countries/Popular_pages'
+    soup = load_page(url)
+    content_div = soup.find(id='mw-content-text')
+    table = content_div.findChildren('table', {'class': 'wikitable'})[0].findChildren('tbody')[0]
+    rows = list(table.findChildren('tr'))
+    found_urls = []
+    for row in rows[1:178]:
+        link = row.findChildren('a', recursive=True)[0]
+        found_urls.append('https://en.wikipedia.org' + link['href'])
+    return found_urls
+
+
 def extract_text(page):
     """
     Take a BeautifulSoup object and extract text in blocks. Basically, separate
@@ -155,5 +171,33 @@ def make_history_dataset(outdir):
                     fp.write(paragraph)
         
     return
+
+def make_country_dataset(outdir):
+    """
+    Go through a list of Wikipedia's general country articles, scrape each one,
+    and write it to text files.
+    """
+    urls = parse_countrylist()
+    time.sleep(4)
+
+    # Scrape each one
+    for url in tqdm(urls):
+        # Get the name of this page and make a directory for it
+        pagename = url.split('wiki/')[1]
+        country_dir = Path(outdir, pagename)
+        country_dir.mkdir()
+        # Scrape the history
+        history = get_history(url)
+        # Replace country name throughout
+        history = [p.replace(pagename, '<country>') for p in history]
+        # Sleep so you don't get banned
+        time.sleep(4)
         
+        # If you got something, save it in paragraphs
+        if history is not None:
+            for i, paragraph in enumerate(history):
+                outfile = str(Path(country_dir, f'paragraph_{i:03}.txt'))
+                with open(outfile, 'w+') as fp:
+                    fp.write(paragraph)
+
     
