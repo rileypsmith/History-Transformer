@@ -1,0 +1,5 @@
+# Ignore all data
+data
+
+# Ignore trained models
+trained_models

@@ -47,7 +47,7 @@ def fix_contractions(text):
 def remove_subtext(text):
     """Remove citations and subtext (parentheticals)."""
     text = re.sub(r'\[[0-9]+\]', '', text)
-    text = re.sub(r'\(.+\)', '', text)
+    text = re.sub(r'\([^)]*\)', '', text)
     return text
 
 def fix_numbers(text):
@@ -130,6 +130,7 @@ def extract_text(page):
     paragraphs = [' <P> '.join(p) for p in paragraphs if p]
     # Preprocess the text
     paragraphs = [preprocess(p) for p in paragraphs]
+    paragraphs = [p for p in paragraphs if len(p.split(' ')) >= 50]
     return paragraphs
     
 def get_history(url):

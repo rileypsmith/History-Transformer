@@ -80,22 +80,30 @@ class TextVectorization():
         
         return indices
 
-def fit_vectorizer(input_dir, outpath, **kwargs):
+def fit_vectorizer(input_dirs, outpath, **kwargs):
     """
     Fit a text vectorization to the entire history dataset, then save its
     weights to the given outpath so that it can be loaded later and train and
     evaluation time.
+    
+    Parameters
+    ----------
+    input_dirs : list
+        A list of directories containing text.
+    outpath : str
+        Path to save the text vectorizer to. Should be a .joblib file.
     """
     # First, load all the text into memory
-    subdirs = sorted(list(Path(input_dir).iterdir()))
     all_text = []
-    for country_dir in subdirs:
-        # Loop over paragraphs for this country
-        for textfile in sorted(list(country_dir.glob('*.txt'))):
-            with open(textfile, 'r') as fp:
-                # Read the text and convert to ndarray
-                local_text = fp.read().strip().split(' ')
-                all_text.append(np.array(local_text, dtype=str))
+    for top_level_dir in input_dirs:
+        subdirs = sorted(list(Path(top_level_dir).iterdir()))
+        for country_dir in subdirs:
+            # Loop over paragraphs for this country
+            for textfile in sorted(list(country_dir.glob('*.txt'))):
+                with open(textfile, 'r') as fp:
+                    # Read the text and convert to ndarray
+                    local_text = fp.read().strip().split(' ')
+                    all_text.append(np.array(local_text, dtype=str))
     
     # Concatenate all the text into a single giant ndarray
     all_text = np.concatenate(all_text, axis=0)
