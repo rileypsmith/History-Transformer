@@ -99,7 +99,21 @@ def fit_vectorizer(input_dirs, outpath, **kwargs):
     
     return vectorizer
 
-def make_dataset(data, batch_size=16, shuffle=True):
+def split_sequence(sequence, seq_length):
+    """
+    Take a sequence of words and split it into many padded sequences. This
+    way it can be fed into an LSTM.
+    """
+    sequences = []
+    labels = []
+    for i in range(4, len(sequence) - 1):
+        subsequence = sequence[:i+1]
+        pad_dims = (0, seq_length - (i + 1))
+        sequences.append(np.pad(np.array(subsequence), pad_dims))
+        labels.append(sequence[i + 1])
+    return np.stack(sequences, axis=0), np.array(labels)
+
+def make_transformer_dataset(data, batch_size=16, shuffle=True):
     """Turn the incoming data (ndarray) into a Tensorflow Dataset object"""
     ds = tf.data.Dataset.from_tensor_slices(data)
     # Apply function to get training example and label, offset by one position
@@ -112,8 +126,23 @@ def make_dataset(data, batch_size=16, shuffle=True):
     ds = ds.prefetch(1000)
     return ds
 
+def make_lstm_dataset(data, seq_length, batch_size=16, shuffle=True):
+    """Turn the incoming data (ndarray) into a Tensorflow Dataset object"""
+    # Convert each sequence into a split sequence
+    all_sequences = [split_sequence(sequence, seq_length) for sequence in data]
+    data = np.concatenate([s[0] for s in all_sequences], axis=0)
+    labels = np.concatenate([np.array(s[1]) for s in all_sequences], axis=0)
+    data_ds = tf.data.Dataset.from_tensor_slices(data)
+    label_ds = tf.data.Dataset.from_tensor_slices(labels)
+    ds = tf.data.Dataset.zip((data_ds, label_ds))
+    ds = ds.batch(batch_size)
+    if shuffle:
+        ds = ds.shuffle(1000, reshuffle_each_iteration=True)
+    ds = ds.prefetch(1000)
+    return ds
+
 def load_datasets(input_dirs, vectorizer_file, seq_length=128, spacing=10,
-                  quiet=False, random_seed=1234, **kwargs):
+                  quiet=False, random_seed=1234, lstm=False, **kwargs):
     """
     Load all the available text data into memory and turn it into a Tensorflow
     Dataset object for training on.
@@ -127,13 +156,17 @@ def load_datasets(input_dirs, vectorizer_file, seq_length=128, spacing=10,
     # Container for all data examples
     data_container = []
     
+    # If fetching transformer data, add 1 to seq length so that you can shift by 1 when training
+    if not lstm:
+        seq_length += 1
+
     # Turn text into usable data
     iterator = all_text if quiet else tqdm(all_text)
     for paragraph in iterator:
-        for start_idx in range(0, len(paragraph) - (seq_length + 1), spacing):
+        for start_idx in range(0, len(paragraph) - seq_length, spacing):
             # Extract a sequence of text and vectorize it
-            text_vector = vect(paragraph[start_idx : start_idx + seq_length + 1],
-                               seq_length=(seq_length + 1))
+            text_vector = vect(paragraph[start_idx : start_idx + seq_length],
+                               seq_length=seq_length)
             data_container.append(text_vector)
     data_container = np.stack(data_container, axis=0)
             
@@ -148,8 +181,12 @@ def load_datasets(input_dirs, vectorizer_file, seq_length=128, spacing=10,
     val_data = data_container[val_indices]
     
     # Build training and validation datasets
-    train_ds = make_dataset(train_data, **kwargs)
-    val_ds = make_dataset(val_data, **kwargs)
+    if lstm:
+        train_ds = make_lstm_dataset(train_data, **kwargs)
+        val_ds = make_lstm_dataset(val_data, **kwargs)
+    else:
+        train_ds = make_transformer_dataset(train_data, **kwargs)
+        val_ds = make_transformer_dataset(val_data, **kwargs)
     
     return train_ds, val_ds
     
