@@ -5,7 +5,23 @@ An LSTM model for writing fake histories.
 Created: 5/4/2023
 """
 
+import tensorflow as tf
 from tensorflow.keras import layers, Model, Sequential
+
+def positional_mask(seq_length, max_seq_length):
+    """
+    Make a mask for missing items in the sequence (padded values at the end).
+
+    Parameters
+    ----------
+    seq_length : tf.Tensor
+        Tensor of shape (bs,). An integer tensor denoting the length of each
+        sequence in the batch.
+    max_seq_length : int
+        The maximum number of items in any one sequence.
+    """
+    mask = tf.range(max_seq_length)[tf.newaxis,:] * seq_length[:,tf.newaxis]
+    return tf.cast(mask, tf.int32)
 
 class MLP(layers.Layer):
     """Simple dense network for head of LSTM network"""
