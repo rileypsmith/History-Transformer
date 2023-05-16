@@ -24,7 +24,10 @@ def fix_punctuation(text):
         '!': ' <.>',
         '<': '<',
         '>': '>',
-        '-': ' '
+        '-': ' ',
+        '”': '',
+        '\xa0': ' ',
+        '\n': ' '
     }
     for punc in string.punctuation:
         if not punc in mapping:
@@ -46,7 +49,7 @@ def fix_contractions(text):
     
 def remove_subtext(text):
     """Remove citations and subtext (parentheticals)."""
-    text = re.sub(r'\[[0-9]+\]', '', text)
+    text = re.sub(r'\[[^)]*\]', '', text)
     text = re.sub(r'\([^)]*\)', '', text)
     return text
 
@@ -160,7 +163,7 @@ def make_history_dataset(outdir):
         # Scrape the history
         history = get_history(url)
         # Replace country name throughout
-        history = [p.replace(pagename, '<country>') for p in history]
+        history = [p.replace(pagename.lower(), '<country>') for p in history]
         # Sleep so you don't get banned
         time.sleep(4)
         
@@ -190,7 +193,7 @@ def make_country_dataset(outdir):
         # Scrape the history
         history = get_history(url)
         # Replace country name throughout
-        history = [p.replace(pagename, '<country>') for p in history]
+        history = [p.replace(pagename.lower(), '<country>') for p in history]
         # Sleep so you don't get banned
         time.sleep(4)
         

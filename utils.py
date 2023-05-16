@@ -11,6 +11,8 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras import losses, callbacks, metrics
 
+from data import load_vectorizer
+
 class LabelSmoothingSCC(losses.Loss):
     """
     Simple implementation of sparse categorical crossentropy loss, but with
@@ -119,3 +121,39 @@ class FadingMemoryMean(metrics.Metric):
         return self.value
     def reset_states(self):
         self.value = None
+        
+class SampleHistoryWriter(callbacks.Callback):
+    """Every time validation is called, write a sample paragraph."""
+    def __init__(self, vectorizer_file=None, outdir=None, 
+                 seq_length=128, num_sentences=3, max_seq_length=64, **kwargs):
+        super().__init__(**kwargs)
+        
+        self.num_sentences = num_sentences
+        self.seq_length = seq_length
+        self.max_seq_length = max_seq_length
+        # Load the vectorizer
+        self.vect = load_vectorizer(vectorizer_file)
+        # And load the end tokens
+        self.end_tokens = self.vect(['<.>', '<p>'])
+        self.outdir = setup_output_dir(outdir)
+        
+    def on_epoch_end(self, epoch, logs=None):
+        # Sentence start (comes from pre-trained vectorizer). If vectorizer
+        # is re-fit, this will need to be modified
+        # Corresponds to '<country> is a country located in'
+        paragraph = np.array([11, 15, 8, 42, 398, 6])
+        # Complete this sentence and predict however many more you want
+        for i in range(self.num_sentences):
+            print(f'generating sequence {i}')
+            paragraph = self.model.finish_sentence(paragraph, self.end_tokens, 
+                                                   self.seq_length, self.max_seq_length)
+        
+        # Convert output back to text
+        text_output = self.vect.to_text(paragraph)
+        text_output = text_output.replace(' <p> ', '\n\n')
+        
+        # Write the output sentence
+        with open(str(Path(self.outdir, f'EPOCH{epoch:03}.txt')), 'w+') as fp:
+            fp.write(text_output)
+        
+    

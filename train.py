@@ -9,8 +9,9 @@ from pathlib import Path
 import tensorflow as tf
 from tensorflow.keras import callbacks
 
-from data import load_datasets, TextVectorization
+from data import load_datasets, TextVectorization, get_end_tokens
 from transformer import Transformer
+from lstm import LSTMModel
 import utils
     
 def train_step(model, opt, data, labels, loss_fn):
@@ -38,10 +39,13 @@ def train(
     vectorizer_file,
     alpha=0.1,
     epochs=100,
+    batches_per_epoch=-1,
     batch_size=16,
     vocab_size=10_000,
     seq_length=128,
-    verbose=True
+    verbose=True,
+    model_type=LSTMModel,
+    **model_kwargs
 ):
     """Main training function"""
     
@@ -49,6 +53,7 @@ def train(
     output_dir = utils.setup_output_dir(output_dir)
     logfile = str(Path(output_dir, 'training_log.csv'))
     modelfile = str(Path(output_dir, 'weights_{epoch:02d}.hdf5'))
+    sample_outdir = str(Path(output_dir, 'fake_history_samples'))
     
     # Load data
     train_ds, val_ds = load_datasets(input_dirs, vectorizer_file, batch_size=batch_size)
@@ -60,7 +65,7 @@ def train(
     opt = tf.keras.optimizers.Adam()
     
     # Build model
-    model = Transformer(vocab_size + 1, seq_length)
+    model = model_type(vocab_size + 1, **model_kwargs)
     model.compile(optimizer=opt)
     
     # Setup callbacks
@@ -71,8 +76,12 @@ def train(
     model_checkpoint = callbacks.ModelCheckpoint(modelfile, save_best_only=True,
                                                  save_weights_only=True)
     model_checkpoint.set_model(model)
+    sample_writer = utils.SampleHistoryWriter(vectorizer_file, sample_outdir,
+                                              seq_length)
+    sample_writer.set_model(model)
     my_callbacks = [
         utils.CustomCSVLogger(logfile),
+        sample_writer,
         model_checkpoint,
         lr_scheduler
     ]
@@ -94,6 +103,11 @@ def train(
         callback.on_epoch_begin(epoch)
         
         for batch_num, (data, labels) in enumerate(train_ds):
+            # Optionally end the epoch early (to speed up getting validation results)
+            if (batches_per_epoch > 0) and (batch_num >= batches_per_epoch):
+                break
+            
+            # Start callbacks
             callback.on_train_batch_begin(batch_num)
             
             # Do one step of gradient descent
@@ -107,6 +121,8 @@ def train(
         # Run validation
         loss_tracker.reset_states()
         for batch_num, (data, labels) in enumerate(val_ds):
+            if (batches_per_epoch > 0) and (batch_num >= batches_per_epoch):
+                break
             # Get validation loss for this batch
             val_loss = val_step(model, data, labels, loss_fn)
             loss_tracker.update_state(val_loss)
@@ -117,14 +133,33 @@ def train(
         loss_tracker.reset_states()
 
 if __name__ == '__main__':
+    # Where data is located
     input_dirs = [
         '/home/rpsmith/NLP/History-Transformer/data/country_data/',
         '/home/rpsmith/NLP/History-Transformer/data/history_data/'
     ]
-    output_dir = '/home/rpsmith/NLP/History-Transformer/output/20230503'
-    vectorizer_file = '/home/rpsmith/NLP/History-Transformer/trained_models/text_vectorizer.joblib'
-    train(input_dirs, output_dir, vectorizer_file, batch_size=32, verbose=False)
     
+    # Pre-fit text vectorizer
+    vectorizer_file = '/home/rpsmith/NLP/History-Transformer/trained_models/text_vectorizer_1000.joblib'
+    
+    # Where to write outputs
+    output_dir = '/home/rpsmith/NLP/History-Transformer/output/20230515_LSTM'
+    
+    # Training call for Transformer
+    # train(input_dirs, output_dir, vectorizer_file, batch_size=2, verbose=False,
+    #       d_k=768, d_v=768, heads=12, hidden_dim=768, n_encoder_layers=12, 
+    #       n_decoder_layers=12, model_type=Transformer)
+    
+    # Model parameters
+    model_kwargs = {
+        'num_layers': 10,
+        'num_dense_layers': 4,
+        'lstm_units': 256
+    }
+    
+    # Training call for LSTM
+    train(input_dirs, output_dir, vectorizer_file, batch_size=16, verbose=False,
+          model_type=LSTMModel, vocab_size=1000, **model_kwargs)
             
             
             

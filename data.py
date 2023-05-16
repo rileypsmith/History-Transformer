@@ -10,8 +10,11 @@ import pickle
 import joblib
 import numpy as np
 import tensorflow as tf
+import tensorflow_datasets as tfds
 from tensorflow.keras import layers
 from tqdm import tqdm
+
+from scraper import preprocess
 
 def load_vectorizer(filepath):
     """Load a TextVectorization layer from a previously saved path"""
@@ -37,17 +40,56 @@ def load_all_text(input_dirs):
 
 class TextVectorization():
     """A knockoff of the Tensorflow class since I am using TF 2.4"""
-    def __init__(self, max_vocab_size=10_000):
-        self.mapping = {}
+    def __init__(self, max_vocab_size=10_000, mapping={}, counts={}):
+        self.mapping = mapping
+        self.counts = counts
         self.max_vocab_size = max_vocab_size
+        
+    def sort_counts(self):
+        """Sort the dictionary of counts"""
+        tmp = sorted([(k, v) for k, v in self.counts.items()], 
+                     key=lambda x: x[1], reverse=True)
+        self.counts = {k: v for k, v in tmp}
+        
+    def make_mapping(self):
+        """Turn the dictionary of counts into a mapping and inverse mapping"""
+        self.sort_counts()
+        mapping = {}
+        for i, word in enumerate(self.counts):
+            if i >= self.max_vocab_size:
+                break
+            mapping[word] = i
+        self.mapping = mapping
+        
+    def invert_mapping(self):
+        """Invert the mapping so we can go from network outputs back to text"""
+        self.inverse_mapping = {v: k for k, v in self.mapping.items()}
+        self.inverse_mapping[self.max_vocab_size] = '<unk>'
         
     def adapt(self, data):
         unique, counts = np.unique(data, return_counts=True)
         sort_idx = np.argsort(counts).ravel()[::-1]
         # return sort_idx
         unique = unique[sort_idx][:self.max_vocab_size - 1]
+        counts = counts[sort_idx][:self.max_vocab_size - 1]
         for i, item in enumerate(unique):
-            self.mapping[item] = i + 1
+            if item in self.counts:
+                self.counts[item] += counts[i]
+            else:
+                self.counts[item] = counts[i]
+                
+        # Convert counts to mapping
+        self.make_mapping()
+        self.invert_mapping()
+            
+    def to_text(self, data):
+        """
+        Convert the incoming data (sequence of integers) back into text.
+        """
+        out = []
+        for i in data:
+            out.append(self.inverse_mapping[i])
+        return ' '.join(out)
             
     def __call__(self, data, seq_length=None):
         """
@@ -69,7 +111,7 @@ class TextVectorization():
         
         return indices
 
-def fit_vectorizer(input_dirs, outpath, **kwargs):
+def fit_vectorizer_history(input_dirs, vocab_size=10_000, outpath=None):
     """
     Fit a text vectorization to the entire history dataset, then save its
     weights to the given outpath so that it can be loaded later and train and
@@ -79,25 +121,82 @@ def fit_vectorizer(input_dirs, outpath, **kwargs):
     ----------
     input_dirs : list
         A list of directories containing text.
+    vocab_size : int
+        The maximum vocabulary size to use for the text vectorizer.
     outpath : str
-        Path to save the text vectorizer to. Should be a .joblib file.
+        Optional path to save the vectorizer to.
     """
     # First, load all the text into memory
     all_text = load_all_text(input_dirs)
-    
     # Concatenate all the text into a single giant ndarray
     all_text = np.concatenate(all_text, axis=0)
-    
     # Build TextVectorization layer
-    vectorizer = TextVectorization(**kwargs)
-    
+    vectorizer = TextVectorization(vocab_size)
     # Adapt it to the dataset
     vectorizer.adapt(all_text)
-    
-    # Save it
-    joblib.dump(vectorizer, outpath)
-    
+    # Optionally save it
+    if outpath is not None:
+        joblib.dump(vectorizer, outpath)
     return vectorizer
+
+def fit_vectorizer_lm1b(vocab_size=10_000, outpath=None):
+    """
+    Fit a TextVectorizer class to the contents of the lm1b dataset.
+    
+    Parameters
+    ----------
+    vocab_size : int
+        The maximum vocabulary size to use for the text vectorizer.
+    outpath : str
+        Optional path to save the vectorizer to.
+    """
+    # Load the dataset (from tensorflow datasets)
+    ds = tfds.load('lm1b', split='train')
+    # Build a vectorizer
+    vectorizer = TextVectorization(vocab_size)
+    # Use the first 20,000 examples to fit the vectorizer
+    for i, example in tqdm(enumerate(ds), total=20_000):
+        if i >= 20_000:
+            break
+        # Preprocess the example
+        text = preprocess(example['text'].numpy().decode('utf-8'))
+        text = np.array(text.split(' '))
+        # Adapt vectorizer
+        vectorizer.adapt(text)
+    # Optionally save it
+    if outpath is not None:
+        joblib.dump(vectorizer, outpath)
+    return vectorizer
+        
+def fit_combined_vectorizer(input_dirs, history_vocab_size=1000, 
+                            total_vocab_size=2000, outpath=None):
+    """
+    Fit a text vectorization instance to the dataset and save it to a file.
+    """
+    # Fit to history dataset
+    history_vect = fit_vectorizer_history(input_dirs, history_vocab_size)
+    # Fit to lm1b dataset
+    lm1b_vect = fit_vectorizer_lm1b(total_vocab_size)
+    # Borrow words from lm1b dataset to fill vocab size
+    n_lm1b = total_vocab_size - history_vocab_size
+    tmp = sorted([k for k in lm1b_vect.mapping.keys()],
+                 key=lambda x: lm1b_vect.counts[x], reverse=True)
+    lm1b_words = []
+    for word in tmp:
+        if word not in history_vect.mapping:
+            lm1b_words.append(word)
+        if len(lm1b_words) >= n_lm1b:
+            break
+
+    # Make combined mapping
+    all_keys = list(history_vect.mapping.keys()) + lm1b_words
+    mapping = {word: i + 1 for i, word in enumerate(all_keys)}
+    vectorizer = TextVectorization(total_vocab_size, mapping)
+    vectorizer.invert_mapping()
+    
+    if outpath is not None:
+        joblib.dump(vectorizer, outpath)
+    return vect
 
 def split_sequence(sequence, seq_length):
     """
@@ -141,7 +240,7 @@ def make_lstm_dataset(data, seq_length, batch_size=16, shuffle=True):
     ds = ds.prefetch(1000)
     return ds
 
-def load_datasets(input_dirs, vectorizer_file, seq_length=128, spacing=10,
+def load_datasets(input_dirs, vectorizer_file, seq_length=128, spacing=4,
                   quiet=False, random_seed=1234, lstm=False, **kwargs):
     """
     Load all the available text data into memory and turn it into a Tensorflow
@@ -169,7 +268,7 @@ def load_datasets(input_dirs, vectorizer_file, seq_length=128, spacing=10,
                                seq_length=seq_length)
             data_container.append(text_vector)
     data_container = np.stack(data_container, axis=0)
-            
+    
     # Randomly separate into train and validation data
     rng = np.random.default_rng(random_seed)
     indices = np.arange(len(data_container))
@@ -190,6 +289,25 @@ def load_datasets(input_dirs, vectorizer_file, seq_length=128, spacing=10,
     
     return train_ds, val_ds
     
+def get_end_tokens(vectorizer_file):
+    """Return the indices for end tokens, <.> and <p>"""
+    vect = load_vectorizer(vectorizer_file)
+    return vect(['<.>', '<p>'])
+
+def prep_lm1b(item, vect, seq_length):
+    return vect(preprocess(x['text'].numpy().decode('utf-8')))
+
+def make_lm1b_dataset(vectorizer_file, seq_length=64, batch_size=16):
+    vect = load_vectorizer(vectorizer_file)
+    ds = tfds.load('lm1b', split='train')
+    ds = ds.map(lambda x: tf.py_function(prep_lm1b, inp=[x, vect, seq_length], Tout=tf.int32))
+    # ds = ds.map(lambda x: preprocess(x['text'].numpy().decode('utf-8')))
+    # ds = ds.map(lambda x: vect(x, seq_length))
+    ds = ds.batch(batch_size)
+    ds = ds.shuffle(1000)
+    ds = ds.prefetch()
+    return ds
     
-    
+
+
     
