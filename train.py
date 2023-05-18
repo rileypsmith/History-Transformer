@@ -5,6 +5,7 @@ A training pipeline for the history transformer.
 Created: 5/2/2023
 """
 from pathlib import Path
+import time
 
 import tensorflow as tf
 from tensorflow.keras import callbacks
@@ -37,7 +38,6 @@ def train(
     input_dirs,
     output_dir,
     vectorizer_file,
-    alpha=0.1,
     epochs=100,
     batches_per_epoch=-1,
     batch_size=16,
@@ -45,6 +45,10 @@ def train(
     seq_length=128,
     verbose=True,
     model_type=LSTMModel,
+    lstm=False,
+    optimizer='adam',
+    initial_lr=1e-3,
+    label_smoothing=0.1,
     **model_kwargs
 ):
     """Main training function"""
@@ -56,13 +60,15 @@ def train(
     sample_outdir = str(Path(output_dir, 'fake_history_samples'))
     
     # Load data
-    train_ds, val_ds = load_datasets(input_dirs, vectorizer_file, batch_size=batch_size)
+    train_ds, val_ds = load_datasets(input_dirs, vectorizer_file, seq_length=seq_length, 
+                                     lstm=lstm, batch_size=batch_size, quiet=False)
     
     # Define loss function
-    loss_fn = utils.LabelSmoothingSCC(alpha)
+    loss_fn = utils.LabelSmoothingSCC(label_smoothing)
     
     # Setup optimizer
-    opt = tf.keras.optimizers.Adam()
+    opt_config = {'class_name': optimizer, 'config': {'learning_rate': initial_lr}}
+    opt = tf.keras.optimizers.get(opt_config)
     
     # Build model
     model = model_type(vocab_size + 1, **model_kwargs)
@@ -96,6 +102,7 @@ def train(
     
     # Main training loop
     callback.on_train_begin()
+    start = time.time()
     for epoch in range(epochs):
         print(f'EPOCH {epoch+1}')
         
@@ -115,7 +122,8 @@ def train(
             loss_tracker.update_state(loss)
             
             # Pass logs to callbacks
-            logs = {'loss': loss_tracker.result()}
+            elapsed = round((time.time() - start) / 60, 2)
+            logs = {'loss': loss_tracker.result(), 'time': elapsed}
             callback.on_train_batch_end(batch_num, logs)
         
         # Run validation
@@ -128,7 +136,8 @@ def train(
             loss_tracker.update_state(val_loss)
         
         # Store epoch level metrics
-        logs = {'val_loss': loss_tracker.result()}
+        elapsed = round((time.time() - start) / 60, 2)
+        logs = {'val_loss': loss_tracker.result(), 'time': elapsed}
         callback.on_epoch_end(epoch, logs)
         loss_tracker.reset_states()
 
@@ -143,7 +152,8 @@ if __name__ == '__main__':
     vectorizer_file = '/home/rpsmith/NLP/History-Transformer/trained_models/text_vectorizer_1000.joblib'
     
     # Where to write outputs
-    output_dir = '/home/rpsmith/NLP/History-Transformer/output/20230515_LSTM'
+    output_dir = '/home/rpsmith/NLP/History-Transformer/output/20230517_LSTM'
+    # output_dir = '/home/rpsmith/NLP/History-Transformer/output/TEST'
     
     # Training call for Transformer
     # train(input_dirs, output_dir, vectorizer_file, batch_size=2, verbose=False,
@@ -152,14 +162,17 @@ if __name__ == '__main__':
     
     # Model parameters
     model_kwargs = {
-        'num_layers': 10,
-        'num_dense_layers': 4,
-        'lstm_units': 256
+        'num_layers': 5,
+        'num_dense_layers': 5,
+        'lstm_units': 64,
+        'embedding_dim': 128,
+        'bidirectional': True
     }
     
     # Training call for LSTM
     train(input_dirs, output_dir, vectorizer_file, batch_size=16, verbose=False,
-          model_type=LSTMModel, vocab_size=1000, **model_kwargs)
+          model_type=LSTMModel, vocab_size=1000, lstm=True, seq_length=128, 
+          label_smoothing=0.02, optimizer='rmsprop', initial_lr=0.01, **model_kwargs)
             
             
             

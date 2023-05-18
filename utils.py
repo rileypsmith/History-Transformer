@@ -25,7 +25,8 @@ class LabelSmoothingSCC(losses.Loss):
     
     def call(self, y_true, y_pred):
         # Encode true labels to one-hot vectors
-        y_true = tf.cast(tf.one_hot(y_true, y_pred.shape[-1]), tf.float32)
+        y_true = tf.cast(tf.one_hot(y_true - 1, y_pred.shape[-1]), tf.float32)
+        # return y_true
         # Now apply Tensorflow's categorical crossentropy with label smoothing
         return self.loss(y_true, y_pred)
     
@@ -34,7 +35,7 @@ class CustomCSVLogger(callbacks.Callback):
     A simple adaptation of the CSVLogger from Tensorflow. This one logs out
     intermediate results (not just every epoch).
     """
-    def __init__(self, filepath, batch_interval=20, **kwargs):
+    def __init__(self, filepath, batch_interval=100, **kwargs):
         super().__init__(**kwargs)
         
         self.filepath = filepath
@@ -125,7 +126,8 @@ class FadingMemoryMean(metrics.Metric):
 class SampleHistoryWriter(callbacks.Callback):
     """Every time validation is called, write a sample paragraph."""
     def __init__(self, vectorizer_file=None, outdir=None, 
-                 seq_length=128, num_sentences=3, max_seq_length=64, **kwargs):
+                 seq_length=128, num_sentences=3, max_seq_length=64, 
+                 train_batch_interval=5000, **kwargs):
         super().__init__(**kwargs)
         
         self.num_sentences = num_sentences
@@ -137,7 +139,10 @@ class SampleHistoryWriter(callbacks.Callback):
         self.end_tokens = self.vect(['<.>', '<p>'])
         self.outdir = setup_output_dir(outdir)
         
-    def on_epoch_end(self, epoch, logs=None):
+        self.epoch = 0
+        self.train_batch_interval = train_batch_interval
+        
+    def write_history(self, context={}):
         # Sentence start (comes from pre-trained vectorizer). If vectorizer
         # is re-fit, this will need to be modified
         # Corresponds to '<country> is a country located in'
@@ -153,7 +158,33 @@ class SampleHistoryWriter(callbacks.Callback):
         text_output = text_output.replace(' <p> ', '\n\n')
         
         # Write the output sentence
-        with open(str(Path(self.outdir, f'EPOCH{epoch:03}.txt')), 'w+') as fp:
+        batch = context.get('batch', None)
+        outname = f'EPOCH{self.epoch:03}_BATCH{batch:05}.txt' if batch else f'EPOCH{self.epoch:03}.txt'
+        with open(str(Path(self.outdir, outname)), 'w+') as fp:
             fp.write(text_output)
         
+    def on_epoch_end(self, epoch, logs=None):
+        self.write_history({'batch': None})
+        self.epoch += 1
     
+    def on_train_batch_end(self, batch, logs=None):
+        if (batch + 1) % self.train_batch_interval == 0:
+            self.write_history({'batch': batch + 1})
+            
+def make_padding_mask(x, invert=False, transformer=True):
+    """
+    Mask for postions in input tensor that are 0 (padding tokens that should be
+    ignored by encoder and decoder).
+    
+    Parameters
+    ----------
+    x : tf.Tensor
+        A Tensor of shape (bs, seq_length).
+    """
+    mask = tf.cast(tf.math.equal(x, 0), tf.float32)
+    # Repeat mask along new dimension
+    if transformer:
+        mask = tf.stack([mask] * mask.shape[1], axis=1)
+    if invert:
+        return mask
+    return 1 - mask

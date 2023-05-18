@@ -198,14 +198,14 @@ def fit_combined_vectorizer(input_dirs, history_vocab_size=1000,
         joblib.dump(vectorizer, outpath)
     return vect
 
-def split_sequence(sequence, seq_length):
+def split_sequence(sequence, seq_length, min_seq_length=8):
     """
     Take a sequence of words and split it into many padded sequences. This
     way it can be fed into an LSTM.
     """
     sequences = []
     labels = []
-    for i in range(4, len(sequence) - 1):
+    for i in range(min_seq_length, len(sequence) - 1):
         subsequence = sequence[:i+1]
         pad_dims = (0, seq_length - (i + 1))
         sequences.append(np.pad(np.array(subsequence), pad_dims))
@@ -221,26 +221,36 @@ def make_transformer_dataset(data, batch_size=16, shuffle=True):
     ds = tf.data.Dataset.zip((data_ds, label_ds))
     ds = ds.batch(batch_size)
     if shuffle:
-        ds = ds.shuffle(1000, reshuffle_each_iteration=True)
+        ds = ds.shuffle(2000, reshuffle_each_iteration=True)
     ds = ds.prefetch(1000)
     return ds
 
-def make_lstm_dataset(data, seq_length, batch_size=16, shuffle=True):
+def make_lstm_dataset(data, seq_length, batch_size=16, shuffle=True, quiet=False):
     """Turn the incoming data (ndarray) into a Tensorflow Dataset object"""
     # Convert each sequence into a split sequence
-    all_sequences = [split_sequence(sequence, seq_length) for sequence in data]
+    print('Making LSTM dataset')
+    iterator = data if quiet else tqdm(data)
+    all_sequences = [split_sequence(sequence, seq_length) for sequence in iterator]
+    print('\t -> Concatenating')
     data = np.concatenate([s[0] for s in all_sequences], axis=0)
     labels = np.concatenate([np.array(s[1]) for s in all_sequences], axis=0)
+    # Do an initial shuffle
+    idx = np.arange(data.shape[0])
+    np.random.shuffle(idx)
+    data = data[idx]
+    labels = labels[idx]
+    print('\t -> Turning into dataset')
     data_ds = tf.data.Dataset.from_tensor_slices(data)
     label_ds = tf.data.Dataset.from_tensor_slices(labels)
     ds = tf.data.Dataset.zip((data_ds, label_ds))
+    print('\t -> Batching, shuffling, and prefetching')
     ds = ds.batch(batch_size)
     if shuffle:
         ds = ds.shuffle(1000, reshuffle_each_iteration=True)
     ds = ds.prefetch(1000)
     return ds
 
-def load_datasets(input_dirs, vectorizer_file, seq_length=128, spacing=4,
+def load_datasets(input_dirs, vectorizer_file, seq_length=128, spacing=64,
                   quiet=False, random_seed=1234, lstm=False, **kwargs):
     """
     Load all the available text data into memory and turn it into a Tensorflow
@@ -281,8 +291,8 @@ def load_datasets(input_dirs, vectorizer_file, seq_length=128, spacing=4,
     
     # Build training and validation datasets
     if lstm:
-        train_ds = make_lstm_dataset(train_data, **kwargs)
-        val_ds = make_lstm_dataset(val_data, **kwargs)
+        train_ds = make_lstm_dataset(train_data, seq_length, quiet=quiet, **kwargs)
+        val_ds = make_lstm_dataset(val_data, seq_length, quiet=quiet, **kwargs)
     else:
         train_ds = make_transformer_dataset(train_data, **kwargs)
         val_ds = make_transformer_dataset(val_data, **kwargs)
@@ -308,6 +318,32 @@ def make_lm1b_dataset(vectorizer_file, seq_length=64, batch_size=16):
     ds = ds.prefetch()
     return ds
     
+class LM1BDataset():
+    def __init__(self, vectorizer_file, seq_length=48, batch_size=16, 
+                 shuffle=True):
+        # Load vectorizer
+        self.vect = load_vectorizer(vectorizer_file)
+        self.seq_length = seq_length
+        
+        # Load lm1b dataset
+        ds = tfds.load('lm1b', split='train')
+        ds = ds.batch(batch_size)
+        if shuffle:
+            ds = ds.shuffle(1000)
+        self.ds = iter(ds.prefetch(1000))
+    
+    def preprocess(self, sentence):
+        text = preprocess(sentence.numpy().decode('utf-8'))
+        return self.vect(text, self.seq_length)
+    
+    def __iter__(self):
+        return self
+    
+    def __next__(self):
+        batch = next(self.ds)
+        preprocessed = [self.preprocess(sentence) for sentence in batch['text']]
+        return tf.stack(preprocessed, axis=0)
+        
 
 
     

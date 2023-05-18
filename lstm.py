@@ -10,20 +10,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers, Model, Sequential
 
-def positional_mask(seq_length, max_seq_length):
-    """
-    Make a mask for missing items in the sequence (padded values at the end).
-
-    Parameters
-    ----------
-    seq_length : tf.Tensor
-        Tensor of shape (bs,). An integer tensor denoting the length of each
-        sequence in the batch.
-    max_seq_length : int
-        The maximum number of items in any one sequence.
-    """
-    mask = tf.range(max_seq_length)[tf.newaxis,:] * seq_length[:,tf.newaxis]
-    return tf.cast(mask, tf.int32)
+import utils
 
 class MLP(layers.Layer):
     """Simple dense network for head of LSTM network"""
@@ -42,19 +29,24 @@ class LSTMModel(Model):
     """A super simple LSTM model for history text generation"""
     def __init__(self, vocab_size, embedding_dim=64, lstm_units=128, num_layers=5,
                  bidirectional=False, num_dense_layers=2, hidden_dim=256, 
-                 **kwargs):
+                 return_sequences=False, **kwargs):
         super().__init__(**kwargs)
         
         # Embedding from vocab into embedding dimension
-        self.embed = layers.Embedding(vocab_size, embedding_dim)
+        self.embed = layers.Embedding(vocab_size + 1, embedding_dim)
         
         # LSTM layers
         lstm_layers = []
-        for _ in range(num_layers):
+        for _ in range(num_layers - 1):
             local_layer = layers.LSTM(lstm_units, return_sequences=True)
             if bidirectional:
                 local_layer = layers.Bidirectional(local_layer)
             lstm_layers.append(local_layer)
+        # Add final layer
+        final_layer = layers.LSTM(lstm_units, return_sequences=return_sequences)
+        if bidirectional:
+            final_layer = layers.Bidirectional(final_layer)
+        lstm_layers.append(final_layer)
         self.lstm_layers = lstm_layers
 
         # Small MLP at the end
@@ -85,8 +77,8 @@ class LSTMModel(Model):
             in_sequence = tf.expand_dims(tf.convert_to_tensor(in_sequence), axis=0)
             mask = tf.equal(in_sequence, 0)
             # Use LSTM to predict the next word
-            preds = self(in_sequence, mask=mask)
-            last_token = preds[0,-1].numpy().argmax()
+            preds = self(in_sequence)
+            last_token = preds[0,-1].numpy().argmax() + 1
             sentence = np.append(sentence, last_token)
             words_predicted += 1
             print(f'predicted {words_predicted} words')
@@ -97,7 +89,7 @@ class LSTMModel(Model):
                 break
         return sentence
     
-    def call(self, x, labels=None, mask=None):
+    def call(self, x, labels=None):
         """
         Parameters
         ----------
@@ -108,6 +100,10 @@ class LSTMModel(Model):
             Not used. Added as an argument because it is needed for Transformer
             (this way one training pipeline works for both).
         """
+        # Make a mask for this input
+        mask = utils.make_padding_mask(x, invert=False, transformer=False)
+        # return mask
+        mask = tf.cast(mask, tf.bool)
         x = self.embed(x)
         for lstm in self.lstm_layers:
             x = lstm(x, mask=mask)

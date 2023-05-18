@@ -6,6 +6,8 @@ you need" in Tensorflow.
 import tensorflow as tf
 from tensorflow.keras import layers, Model, Sequential
 
+import utils
+
 def make_position_mask(shape):
     """
     Mask for positions in input sequence so that decoder cannot attend to future
@@ -13,21 +15,6 @@ def make_position_mask(shape):
     """
     mask = 1 - tf.linalg.band_part(tf.ones((shape, shape), dtype=tf.float32), -1, 0)
     return mask[tf.newaxis, :]
-
-def make_padding_mask(x):
-    """
-    Mask for postions in input tensor that are 0 (padding tokens that should be
-    ignored by encoder and decoder).
-    
-    Parameters
-    ----------
-    x : tf.Tensor
-        A Tensor of shape (bs, seq_length).
-    """
-    mask = tf.cast(tf.math.equal(x, 0), tf.float32)
-    # Repeat mask along new dimension
-    mask = tf.stack([mask] * mask.shape[1], axis=1)
-    return mask
 
 class ScaledDotProductAttention(layers.Layer):
     def __init__(self, scaling_constant, **kwargs):
@@ -240,7 +227,7 @@ class Transformer(Model):
     The main transformer class. Imitates the original paper, except embeddings
     for position and word are learned instead of fixed.
     """
-    def __init__(self, vocab_size, max_seq_length, embedding_dim=64, 
+    def __init__(self, vocab_size, max_seq_length=128, embedding_dim=64, 
                  d_k=128, d_v=128, heads=8, hidden_dim=2048, 
                  n_encoder_layers=6, n_decoder_layers=6, **kwargs):
         super().__init__(**kwargs)
@@ -258,13 +245,13 @@ class Transformer(Model):
         # Set positional mask, which depends only on the sequence length
         self.position_mask = make_position_mask(max_seq_length)
         
-    def call(self, encoder_input, decoder_input, training=False):
+    def call(self, encoder_input, decoder_input, mask=None, training=False):
         # Make padding mask for items shorter than max sequence length
-        encoder_padding_mask = make_padding_mask(encoder_input)[:, tf.newaxis, :, :]
+        encoder_padding_mask = utils.make_padding_mask(encoder_input, invert=True)[:, tf.newaxis, :, :]
         
         # Combine position and padding mask for decoder to prevent attending
         # to subsequent positions
-        decoder_padding_mask = make_padding_mask(decoder_input)
+        decoder_padding_mask = utils.make_padding_mask(decoder_input, invert=True)
         position_mask = tf.math.maximum(decoder_padding_mask, self.position_mask)[:, tf.newaxis, :, :]
         
         # Encoder the inputs
