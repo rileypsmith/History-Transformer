@@ -257,7 +257,7 @@ def load_datasets(input_dirs, vectorizer_file, seq_length=128, spacing=64,
     Dataset object for training on.
     """
     # Load all the text into memory
-    all_text = load_all_text(input_dirs)
+    all_text = load_all_text(input_dirs)[:1000]
     
     # Load text vectorizer
     vect = load_vectorizer(vectorizer_file)

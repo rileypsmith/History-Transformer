@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import losses, callbacks, metrics
+from tensorflow.keras import backend as K
 
 from data import load_vectorizer
 
@@ -67,6 +68,12 @@ class CustomCSVLogger(callbacks.Callback):
     
     def on_epoch_end(self, epoch, logs=None):
         # Write the data received at this epoch
+        if not self.keys:
+            keys = sorted(list(logs.keys()))
+            self.keys = ['epoch', 'batch', 'valid_flag'] + keys
+            # Set CSV writer
+            self.writer = csv.DictWriter(self.csv_file, fieldnames=self.keys)
+            self.writer.writeheader()
         write_data = {'epoch': epoch + 1, 'valid_flag': 1, **logs}
         self.writer.writerow(write_data)
         self.csv_file.flush()
@@ -90,26 +97,36 @@ def setup_output_dir(output_dir):
     output_dir.mkdir()
     return str(output_dir)
 
-class CosineAnnealingLR():
+class CosineAnnealingLR(callbacks.Callback):
     """Simple cosine annealing learning rate scheduler"""
     def __init__(self, initial_lr=1e-3, eta_min=1e-8, num_epochs=100, 
-                 period=10, **kwargs):
+                 period=10, warmup=1000, **kwargs):
         # super().__init__(**kwargs)
         self.initial_lr = initial_lr
         self.eta_min = eta_min
         self.num_epochs = num_epochs
         self.period = period
+        self.epoch = 0
+        self.warmup = warmup
         
-    def __call__(self, epoch, logs=None):
+    def on_epoch_begin(self, epoch, logs=None):
+        self.epoch = epoch
         if epoch >= self.num_epochs:
-            return 0
+            return self.eta_min
         decay_factor = 1 - (epoch / self.num_epochs)
         cos_factor = 1 + np.cos((epoch / self.period) * np.pi)
-        return (self.eta_min + ((self.initial_lr - self.eta_min) / 2) * cos_factor) * decay_factor
+        lr = (self.eta_min + ((self.initial_lr - self.eta_min) / 2) * cos_factor) * decay_factor
+        K.set_value(self.model.optimizer.lr, K.get_value(lr))
+        
+    def on_train_batch_begin(self, batch, logs=None):
+        if (self.warmup is not None) and (batch <= self.warmup) and (self.epoch == 0):
+            # Compute linearly warming up learning rate
+            lr = (self.initial_lr - self.eta_min) * (batch / self.warmup) + self.eta_min
+            K.set_value(self.model.optimizer.lr, K.get_value(lr))
     
 class FadingMemoryMean(metrics.Metric):
     """Simple mean but with fading memory"""
-    def __init__(self, memory_constant=0.95, **kwargs):
+    def __init__(self, memory_constant=0.99, **kwargs):
         super().__init__(**kwargs)
         self.memory_constant = memory_constant
         self.value = None
@@ -127,7 +144,7 @@ class SampleHistoryWriter(callbacks.Callback):
     """Every time validation is called, write a sample paragraph."""
     def __init__(self, vectorizer_file=None, outdir=None, 
                  seq_length=128, num_sentences=3, max_seq_length=64, 
-                 train_batch_interval=5000, **kwargs):
+                 train_batch_interval=1500, **kwargs):
         super().__init__(**kwargs)
         
         self.num_sentences = num_sentences
@@ -149,7 +166,6 @@ class SampleHistoryWriter(callbacks.Callback):
         paragraph = np.array([11, 15, 8, 42, 398, 6])
         # Complete this sentence and predict however many more you want
         for i in range(self.num_sentences):
-            print(f'generating sequence {i}')
             paragraph = self.model.finish_sentence(paragraph, self.end_tokens, 
                                                    self.seq_length, self.max_seq_length)
         

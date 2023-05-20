@@ -1,5 +1,6 @@
 """
-An LSTM model for writing fake histories.
+An LSTM model for writing fake histories that tries to optimize distance in
+embedded space between model output and target word.
 
 @author: rileypsmith
 Created: 5/4/2023
@@ -38,12 +39,14 @@ class LSTMSublayer(layers.Layer):
     def call(self, x, mask=None):
         return self.dense(self.lstm(x, mask=mask))
 
-class LSTMModel(Model):
+class EmbeddedLSTMModel(Model):
     """A super simple LSTM model for history text generation"""
     def __init__(self, vocab_size, embedding_dim=64, lstm_units=128, num_layers=5,
                  bidirectional=False, num_dense_layers=2, hidden_dim=256, 
                  return_sequences=False, **kwargs):
         super().__init__(**kwargs)
+        
+        self.embedding_dim = embedding_dim
         
         # Embedding from vocab into embedding dimension
         self.embed = layers.Embedding(vocab_size + 1, embedding_dim)
@@ -59,45 +62,9 @@ class LSTMModel(Model):
         self.lstm_layers = lstm_layers
 
         # Small MLP at the end
-        self.head = MLP(num_dense_layers, vocab_size, hidden_dim)
-        
-    def finish_sentence(self, sentence_start, end_tokens, seq_length=128,
-                        max_seq_length=128):
-        """
-        Finish the rest of the sentence (until next punctuation character).
-        
-        Parameters
-        ----------
-        sentence_start : ndarray
-            Array of integers. The vectorized start to a sentence.
-        end_tokens : listlike
-            A list of punctuation tokens that end a sentence.
-        """
-        # Make a mask for missing items
-        last_token = 0
-        words_predicted = 0
-        sentence = sentence_start.copy()
-        while not last_token in end_tokens:
-            if len(sentence) < seq_length:
-                in_sequence = np.pad(sentence, (0, seq_length - len(sentence)))
-            else:
-                excess = len(sentence) - seq_length
-                in_sequence = sentence[excess:]
-            in_sequence = tf.expand_dims(tf.convert_to_tensor(in_sequence), axis=0)
-            mask = tf.equal(in_sequence, 0)
-            # Use LSTM to predict the next word
-            preds = self(in_sequence)
-            last_token = preds[0,-1].numpy().argmax() + 1
-            sentence = np.append(sentence, last_token)
-            words_predicted += 1
-            
-            # Stop after so many iterations (early on in training it can run
-            # for awhile before hitting an end token)
-            if words_predicted >= max_seq_length:
-                break
-        return sentence
+        self.head = MLP(num_dense_layers, embedding_dim, hidden_dim)
     
-    def call(self, x, labels=None):
+    def call(self, x, labels):
         """
         Parameters
         ----------
@@ -110,34 +77,116 @@ class LSTMModel(Model):
         """
         # Make a mask for this input
         mask = utils.make_padding_mask(x, invert=False, transformer=False)
-        # return mask
         mask = tf.cast(mask, tf.bool)
+        # Put it through the LSTM
         x = self.embed(x)
         for lstm in self.lstm_layers:
             x = lstm(x, mask=mask)
-        return self.head(x)
+        # Project back into embedding dimension
+        x = self.head(x)
+        # Now embed the label
+        y = self.embed(labels)
+        return x, y
     
-    def get_loss(self, label_smoothing):
-        """Return a loss function that will be used to train this model"""
-        utils.LabelSmoothingSCC(label_smoothing)
+    def sim_score(self, x, y):
+        tmpx = x.numpy()
+        tmpy = y.numpy()
+        return tmpx.dot(tmpy) / (np.linalg.norm(tmpx) * np.linalg.norm(tmpy))
     
+    def distance_regularizer(self, var_alpha=0.005):
+        """Add regularization based on Mahalanobis distance"""
+        # Variance regularizer will try to maximize variance between rows of
+        # embedding matrix
+        mat = self.layers[0].weights[0]
+        var = tf.math.reduce_variance(mat, axis=0)
+        var_loss = 1 / tf.clip_by_value(var, 1e-100, 1e100)
+        var_loss = tf.math.reduce_mean(var_loss)
+        # Characterize prior for distribution as multivariate normal
+        dist = tf.math.sqrt(tf.math.reduce_sum(tf.math.square(mat), axis=1))
+        dist_loss = tf.math.reduce_mean(dist)
+        return (var_loss * var_alpha), dist_loss
+        # return (var_loss * var_alpha) + dist_loss
+    
+    def predict(self, x):
+        """Take the input and predict the next word"""
+        # Make a mask for this input
+        mask = tf.cast(utils.make_padding_mask(x, invert=False, transformer=False), tf.bool)
+        # Put it through the LSTM
+        x = self.embed(x)
+        for lstm in self.lstm_layers:
+            x = lstm(x, mask=mask)
+        # Project back into embedding dimension
+        x = self.head(x)
+        # Now we have an embedded vector, we have to convert it to a word
+        # mat = self.layers[0].weights[0]
+        # sim_scores = [self.sim_score(x, mat[i]) for i in range(mat.shape[0])]
+        # return np.array(sim_scores).argmax()
+        
+        
+        inverse = tf.linalg.matmul(x, self.inv_embed)
+        inverse = tf.nn.softmax(inverse)
+        return inverse.numpy().argmax()
+    
+    def finish_sentence(self, sentence_start, end_tokens, seq_length=128,
+                        max_seq_length=128):
+        """
+        Finish the rest of the sentence (until next punctuation character).
+        
+        Parameters
+        ----------
+        sentence_start : ndarray
+            Array of integers. The vectorized start to a sentence.
+        end_tokens : listlike
+            A list of punctuation tokens that end a sentence.
+        """
+        # Make inverse embedding matrix
+        self.inv_embed = tf.linalg.pinv(self.layers[0].weights[0], rcond=1e-6)
+        # Make a mask for missing items
+        last_token = 0
+        words_predicted = 0
+        sentence = sentence_start.copy()
+        while not last_token in end_tokens:
+            if len(sentence) < seq_length:
+                in_sequence = np.pad(sentence, (0, seq_length - len(sentence)))
+            else:
+                excess = len(sentence) - seq_length
+                in_sequence = sentence[excess:]
+            in_sequence = tf.expand_dims(tf.convert_to_tensor(in_sequence), axis=0)
+            # Use LSTM to predict the next word
+            last_token = self.predict(in_sequence)
+            sentence = np.append(sentence, last_token)
+            words_predicted += 1
+            # Stop after so many iterations (early on in training it can run
+            # for awhile before hitting an end token)
+            if words_predicted >= max_seq_length:
+                break
+        return sentence
+    
+    def get_loss(self, *args):
+        """Return a loss function suitable for training this model"""
+        return tf.keras.losses.CosineSimilarity()
+        
     def train_step(self, data, labels):
-        """Do one training step and update parameters."""
+        """Do one training step and update weights"""
         with tf.GradientTape() as tape:
             # Forward pass
-            preds = self(data, labels)
+            pred, true = self(data, labels)
             # Compute loss
-            loss = self.loss(labels, preds)
+            var_loss, dist_loss = self.distance_regularizer()
+            sim_loss = self.loss(true, pred) + 1
+            loss = sim_loss + var_loss + dist_loss
+            # loss = self.loss(true, pred) + self.distance_regularizer()
             # Compute gradients
             grad = tape.gradient(loss, self.trainable_variables)
             # Backpropogate
             self.optimizer.apply_gradients(zip(grad, self.trainable_variables))
-        return loss
+        return sim_loss, var_loss, dist_loss
     
     def val_step(self, data, labels):
         """Do one step of evaluation (just don't do backpropogation)"""
-        preds = self(data, labels)
-        loss = self.loss(labels, preds)
-        return loss
-        
-        
+        pred, true = self(data, labels)
+        sim_loss = self.loss(true, pred) + 1
+        var_loss, dist_loss = self.distance_regularizer()
+        return sim_loss, var_loss, dist_loss
+        # loss = self.loss(true, pred) + var_loss + dist_loss
+        # return loss

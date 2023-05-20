@@ -1,0 +1,39 @@
+# YAML file for training arguments
+
+# Input directories to read data from
+input_dirs: [
+  '/home/rpsmith/NLP/History-Transformer/data/country_data/',
+  '/home/rpsmith/NLP/History-Transformer/data/history_data/'
+]
+
+# Output directory
+output_dir: '/home/rpsmith/NLP/History-Transformer/output/20230519_EmbeddedLSTM'
+# output_dir: '/home/rpsmith/NLP/History-Transformer/output/TEST'
+
+# Path to trained text vectorizer
+vectorizer_file: '/home/rpsmith/NLP/History-Transformer/trained_models/text_vectorizer_1000.joblib'
+
+# Other training parameters
+epochs: 200
+batches_per_epoch: -1
+batch_size: 128
+vocab_size: 1000
+seq_length: 64
+verbose: False
+model_type: EmbeddedLSTMModel
+lstm: True
+optimizer: rmsprop
+initial_lr: 0.02
+lr_schedule_period: 5
+label_smoothing: 0.02
+
+# Keyword arguments passed to model
+model_kwargs:
+    num_layers: 5
+    num_dense_layers: 2
+    lstm_units: 512
+    embedding_dim: 256
+    bidirectional: False
+
+
+
